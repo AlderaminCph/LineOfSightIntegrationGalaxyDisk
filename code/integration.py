@@ -1,8 +1,8 @@
 """
 Module for integration.
 
-Integrate 3D luminosity density model of exponential disk and for
-creating analytic 2D edge-on disk model using van der Cruit formulae.
+Integrates 3D luminosity density model of exponential disk and
+creates an analytic 2D edge-on disk model using van der Cruit formulae.
 """
 # !/usr/bin/env python
 # coding: utf-8
@@ -10,11 +10,10 @@ creating analytic 2D edge-on disk model using van der Cruit formulae.
 import math
 import numbers
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.integrate as integrate
 from numpy import ndarray
 from scipy.special import k1
 
@@ -46,6 +45,20 @@ class GalaxyProperties:
     n_value: float
 
 
+@dataclass
+class QuadratureParameters:
+    """Parameters of integration."""
+
+    interval: float  # the size of interval
+    inner_scale: int  # scale factor of inner interval
+    outer_scale: int  # scale factor of outer interval
+    number_of_intervals: int  # the number of intervals
+    quadrature_type: str  # the type of quadrature type
+    integrand_function: Callable[
+        [float, List[float]], float
+    ]  # density function
+
+
 def gauss_legendre(
     luminosity_density,
     limits: Optional[Bounds],
@@ -75,10 +88,35 @@ def gauss_legendre(
     )
 
 
+def gauss_laguerre(
+    luminosity_density,
+    parameters: List[float],
+    roots: List[float],
+    weights: List[float],
+) -> float:
+    """Integrate infinitely luminosity_density.
+
+    Integration performed using
+    gauss laguerre quadrature from 0 to inf.
+
+    Args:
+        parameters: the list of parameters for integrand function
+        luminosity_density: integrand function
+        roots: roots of the gauss laguerre polynom
+        weights: weights of the gauss laguerre polynom
+    Return:
+        the integral value.
+    """
+    return 2 * sum(
+        weights * luminosity_density(roots, parameters) * np.exp(roots)
+    )
+
+
 def make_model(
     model_type: str,
     frame_size: int,
     parameters: List[float],
+    quadrature_type: str = None,
     roots=None,
     weights=None,
     quad=False,
@@ -99,7 +137,8 @@ def make_model(
             h: exponential scale length
             n: the vertical profile follows the sech^(2/n) function
             z_0: the vertical scale height
-            quad: a boolean flag. If it's True the scipy.inegrate.quad is used
+        quadrature_type: legendre or lagere
+        quad: a boolean flag. If it's True the scipy.inegrate.quad is used
     Return:
         TotalIntensity: the array with the total intensity value.
     """
@@ -107,23 +146,24 @@ def make_model(
     total_intensity = []
     parameters.insert(0, centre_pixel)
     for x_coord in np.arange(frame_size):
-        intensity = []
+        row_intensity = []
         for y_coord in np.arange(frame_size):
             if model_type == "exp_disk_3D":
-                intensity.append(
+                row_intensity.append(
                     exponential_disk_3d(
                         Point(x_coord, y_coord),
                         parameters,
                         roots,
                         weights,
+                        quadrature_type,
                         quad,
                     )
                 )
             elif model_type == "edge_on":
-                intensity.append(
+                row_intensity.append(
                     edge_on_disk(Point(x_coord, y_coord), parameters)
                 )
-        total_intensity.append(intensity)
+        total_intensity.append(row_intensity)
     return total_intensity
 
 
@@ -132,6 +172,7 @@ def exponential_disk_3d(
     parameters: List[float],
     roots: List[float],
     weights: List[float],
+    quadrature_type: str,
     quad=False,
 ) -> float:
     """Get intensity of the pixel.
@@ -151,6 +192,7 @@ def exponential_disk_3d(
             z_0: the vertical scale height
         roots: roots of the gauss legendre polynom
         weights: weights of the gauss legendre polynom
+        quadrature_type: legendre or lagere
         quad: a boolean flag. If it's True the scipy.integrate.quad is used
     Return:
         intensity: intensity of the pixel
@@ -164,7 +206,9 @@ def exponential_disk_3d(
         n,
         z_0,
     ) = parameters
+
     pos_angle += 90
+
     inc_rad = math.radians(inc)
     cos_inc = math.cos(inc_rad)
     sin_inc = math.sin(inc_rad)
@@ -189,54 +233,82 @@ def exponential_disk_3d(
         z_0,
         n,
     ]
+
     if inc < 80:
         # intersection of the disk plane and sky plane
         s_plane = projected_pix.y * np.tan(inc_rad)
     else:
         s_plane = 0
+
     # integrate interval
     interval = max(h_scale * np.sin(inc_rad), z_0 * np.cos(inc_rad))
 
-    inner, outer = interval, interval
-    inner *= 5
-    outer *= 20
+    legendre_params = QuadratureParameters(
+        interval=interval,
+        inner_scale=5,
+        outer_scale=36,
+        number_of_intervals=4,
+        quadrature_type="legendre",
+        integrand_function=get_luminosity_density,
+    )
 
-    if not quad:
-        intensity = (
-            gauss_legendre(
-                get_luminosity_density,
-                Bounds(s_plane - outer, s_plane - inner),
-                param,
-                roots,
-                weights,
-            )
-            + gauss_legendre(
-                get_luminosity_density,
-                Bounds(s_plane - inner, s_plane),
-                param,
-                roots,
-                weights,
-            )
-            + gauss_legendre(
-                get_luminosity_density,
-                Bounds(s_plane, s_plane + inner),
-                param,
-                roots,
-                weights,
-            )
-            + gauss_legendre(
-                get_luminosity_density,
-                Bounds(s_plane + inner, s_plane + outer),
-                param,
-                roots,
-                weights,
-            )
+    intensity = integrate_luminosity_density(
+        legendre_params, s_plane, param, roots, weights
+    )
+    return intensity
+
+
+def integrate_luminosity_density(
+    quad_params: Optional[QuadratureParameters],
+    s_plane: float,
+    param: List[float],
+    roots: List[float],
+    weights: List[float],
+) -> float:
+    """
+    Calculate integrate value.
+
+    Args:
+        quad_params: parameters of quadrature
+        s_plane: the intersection of sky and disk plane
+        param: parameters of density function
+        roots: roots of polynom
+        weights: weights of polynom
+
+    Return:
+        integral_value: the result of LoS integration
+    """
+    inner, outer = quad_params.interval, quad_params.interval
+    inner *= quad_params.inner_scale
+    outer *= quad_params.outer_scale
+    interval_number = quad_params.number_of_intervals
+
+    select_function = {"legendre": gauss_legendre, "laguerre": gauss_laguerre}
+
+    quadrature_function = select_function[quad_params.quadrature_type]
+
+    if interval_number == 4:
+        integrate_limits = (
+            Bounds(s_plane - outer, s_plane - inner),
+            Bounds(s_plane - inner, s_plane),
+            Bounds(s_plane, s_plane + inner),
+            Bounds(s_plane + inner, s_plane + outer),
+        )
+    elif interval_number == 2:
+        integrate_limits = (
+            Bounds(s_plane - outer, s_plane),
+            Bounds(s_plane, s_plane + outer),
         )
     else:
-        intensity = integrate.quad(
-            get_luminosity_density, -100, 100, args=param
-        )[0]
-    return intensity
+        integrate_limits = Bounds(-100, 100)
+
+    integral_value = 0
+
+    for limit in integrate_limits:
+        integral_value += quadrature_function(
+            quad_params.integrand_function, limit, param, roots, weights
+        )
+    return integral_value
 
 
 def get_luminosity_density(
@@ -286,13 +358,16 @@ def get_luminosity_density(
     return lum_density
 
 
-def numeric_solution(roots, weights, plot_flag: bool = False):
+def numeric_solution(
+    roots, weights, quadrature_type: str, plot_flag: bool = False
+):
     """
     Calculate numeric solution for integration of 3D exponential disk.
 
     Args:
-        roots: roots of the gauss legendre polynom
-        weights: weights of the gauss legendre polynom
+        roots: roots of the gauss legendre or laguerre polynom
+        weights: weights of the gauss legendre or laguerre polynom
+        quadrature_type: legendre or laguerre
 
     Returns:
         total_intensity: intensity array of the model
@@ -302,7 +377,12 @@ def numeric_solution(roots, weights, plot_flag: bool = False):
     parameters = setup_galaxy("exp_disk_3D")
 
     total_intensity = make_model(
-        "exp_disk_3D", frame_size, parameters, roots, weights
+        "exp_disk_3D",
+        frame_size,
+        parameters,
+        quadrature_type,
+        roots,
+        weights,
     )
     if plot_flag:
         plot_intensity_map(total_intensity, "Numeric", "Numeric.png")
@@ -481,39 +561,71 @@ def plot_edge_on(plot_flag: bool = False) -> ndarray:
     return total_intensity
 
 
-def plot_difference_map(number_roots: int) -> None:
+def plot_difference_map(
+    quadrature_type: str, number_roots: int, cmap: str, plot_flag: bool = False
+):
     """Plot three images in row.
 
     Images: analytic, numeric solutions and
     difference map regarding on various
     number of legendre roots.
     Args:
-        number_roots: the order of legendre polynome.
+        quadrature_type: legendre or laguerre.
+        number_roots: the order of polynome.
+        cmap: the name of color map
+    Returns:
+        max_deviation, min_deviation
     """
-    roots, weights = np.polynomial.legendre.leggauss(number_roots)
-    numeric_intensity = numeric_solution(roots, weights)
+    if quadrature_type == "legendre":
+        roots, weights = np.polynomial.legendre.leggauss(number_roots)
+    elif quadrature_type == "laguerre":
+        roots, weights = np.polynomial.laguerre.laggauss(number_roots)
+    numeric_intensity = numeric_solution(roots, weights, quadrature_type)
+    print(f" {numeric_intensity = } ")
     analytic_intensity: ndarray = plot_edge_on()
     difference_map = (
         numeric_intensity - analytic_intensity
     ) / analytic_intensity
-    maps_list = [numeric_intensity, analytic_intensity, difference_map]
-    plt.rcParams["text.usetex"] = True
-    titles_list = (
-        f"Numeric ({number_roots = })",
-        f"Analytic ({number_roots = })",
-        r"$\frac{numeric-analytic}{analytic}$",
-    )
-    fig, axs = plt.subplots(1, 3, figsize=(12, 4))
-    cmaps = ["RdBu_r", "RdBu_r", "RdBu_r"]
-    for col in range(3):
-        ax = axs[col]
-        ax.set_title(titles_list[col])
-        pcm = ax.imshow(maps_list[col], origin="lower", cmap=cmaps[col])
-        fig.colorbar(pcm, ax=ax, shrink=0.7)
-    plt.savefig(f"oder_{number_roots}.png")
-    plt.show()
+
+    max_deviation = np.abs(np.amax(difference_map))
+    min_deviation = np.abs(np.amin(difference_map))
+    median_deviation = np.abs(np.median(difference_map))
+    if plot_flag:
+        maps_list = [numeric_intensity, analytic_intensity, difference_map]
+        plt.rcParams["text.usetex"] = True
+        titles_list = (
+            f"Numeric ({quadrature_type} {number_roots = })",
+            f"Analytic ({number_roots = })",
+            r"$\frac{numeric-analytic}{analytic}$",
+        )
+        fig, axs = plt.subplots(1, 3, figsize=(12, 4))
+        for col in range(3):
+            ax = axs[col]
+            ax.set_title(titles_list[col])
+            pcm = ax.imshow(maps_list[col], origin="lower", cmap=cmap)
+            fig.colorbar(pcm, ax=ax, shrink=0.7)
+        plt.savefig(f"{quadrature_type}_oder_{number_roots}.png")
+        plt.show()
+    return (max_deviation, min_deviation, median_deviation)
 
 
 if __name__ == "__main__":
-    for i in range(90, 130, 10):
-        plot_difference_map(i)
+    max_deviation_legendre = []
+    min_deviation_legendre = []
+    median_deviation_legendre = []
+    # quadrature_type = "laguerre"
+    quadrature_type_name = "legendre"
+    x_range = list(range(10, 130, 10))
+    for i in x_range:
+        """
+        max_deviation_legendre.append(
+            plot_difference_map(quadrature_type_name, i, "RdBu_r")[0]
+        )
+        min_deviation_legendre.append(
+            plot_difference_map(quadrature_type_name, i, "RdBu_r")[1]
+        )
+        median_deviation_legendre.append(
+            plot_difference_map(quadrature_type_name, i, "RdBu_r")[2]
+        )
+        """
+        plot_difference_map(quadrature_type_name, i, "RdBu_r", True)
