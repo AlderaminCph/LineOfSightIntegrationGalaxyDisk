@@ -120,7 +120,7 @@ def make_model(
     roots=None,
     weights=None,
     quad=False,
-) -> List[List]:
+) -> List[List[float]]:
     """Return the 2D array with total intensity values.
 
      The size of an array is he frame size.
@@ -358,9 +358,9 @@ def get_luminosity_density(
     return lum_density
 
 
-def numeric_solution(
-    roots, weights, quadrature_type: str, plot_flag: bool = False
-):
+def get_numeric_solution(
+    roots, weights, quadrature_type: str
+) -> List[List[float]]:
     """
     Calculate numeric solution for integration of 3D exponential disk.
 
@@ -384,9 +384,6 @@ def numeric_solution(
         roots,
         weights,
     )
-    if plot_flag:
-        plot_intensity_map(total_intensity, "Numeric", "Numeric.png")
-
     return total_intensity
 
 
@@ -545,68 +542,41 @@ def plot_intensity_map(total_intensity, title, figname):
     plt.show()
 
 
-def plot_edge_on(plot_flag: bool = False) -> ndarray:
-    """plot edge on model."""
+def get_edge_on() -> ndarray:
+    """Get edge on model intensity.
+
+    Return:
+        total_intensity: an array with intensity
+    """
     frame_size = 100  # the size of the grid
 
     parameters = setup_galaxy("edge_on")
 
     total_intensity = np.array(make_model("edge_on", frame_size, parameters))
-    if plot_flag:
-        plot_intensity_map(
-            total_intensity,
-            "Bessel-function solution EDGE-ON",
-            "EDGE_ON_ANALYTIC_SOLUTION.png",
-        )
+
     return total_intensity
 
 
-def plot_difference_map(
-    quadrature_type: str, number_roots: int, cmap: str, plot_flag: bool = False
-):
-    """Plot three images in row.
+def get_difference_map(quadrature_type: str, number_roots: int) -> ndarray:
+    """Calculate difference map.
 
-    Images: analytic, numeric solutions and
-    difference map regarding on various
-    number of legendre roots.
     Args:
         quadrature_type: legendre or laguerre.
         number_roots: the order of polynome.
-        cmap: the name of color map
     Returns:
-        max_deviation, min_deviation
+        difference_map
     """
     if quadrature_type == "legendre":
         roots, weights = np.polynomial.legendre.leggauss(number_roots)
     elif quadrature_type == "laguerre":
         roots, weights = np.polynomial.laguerre.laggauss(number_roots)
-    numeric_intensity = numeric_solution(roots, weights, quadrature_type)
-    print(f" {numeric_intensity = } ")
-    analytic_intensity: ndarray = plot_edge_on()
+    numeric_intensity = get_numeric_solution(roots, weights, quadrature_type)
+    analytic_intensity = get_edge_on()
     difference_map = (
         numeric_intensity - analytic_intensity
     ) / analytic_intensity
 
-    max_deviation = np.abs(np.amax(difference_map))
-    min_deviation = np.abs(np.amin(difference_map))
-    median_deviation = np.abs(np.median(difference_map))
-    if plot_flag:
-        maps_list = [numeric_intensity, analytic_intensity, difference_map]
-        plt.rcParams["text.usetex"] = True
-        titles_list = (
-            f"Numeric ({quadrature_type} {number_roots = })",
-            f"Analytic ({number_roots = })",
-            r"$\frac{numeric-analytic}{analytic}$",
-        )
-        fig, axs = plt.subplots(1, 3, figsize=(12, 4))
-        for col in range(3):
-            ax = axs[col]
-            ax.set_title(titles_list[col])
-            pcm = ax.imshow(maps_list[col], origin="lower", cmap=cmap)
-            fig.colorbar(pcm, ax=ax, shrink=0.7)
-        plt.savefig(f"{quadrature_type}_oder_{number_roots}.png")
-        plt.show()
-    return (max_deviation, min_deviation, median_deviation)
+    return difference_map
 
 
 if __name__ == "__main__":
@@ -628,4 +598,4 @@ if __name__ == "__main__":
             plot_difference_map(quadrature_type_name, i, "RdBu_r")[2]
         )
         """
-        plot_difference_map(quadrature_type_name, i, "RdBu_r", True)
+        get_difference_map(quadrature_type_name, i, "RdBu_r", True)
